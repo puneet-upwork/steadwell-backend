@@ -449,7 +449,15 @@ func (h *Handler) update(c *gin.Context) {
 
 func (h *Handler) softDelete(c *gin.Context) {
 	id := c.Param("id")
-	tag, err := h.pool.Exec(c.Request.Context(), `
+	ctx := c.Request.Context()
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete failed"})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE organizations SET status = $2
 		WHERE id = $1::uuid AND status <> $2
 	`, id, StatusDisabled)
@@ -459,6 +467,17 @@ func (h *Handler) softDelete(c *gin.Context) {
 	}
 	if tag.RowsAffected() == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE users SET status = $2
+		WHERE organization_id = $1::uuid AND status <> $2
+	`, id, StatusDisabled); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete failed"})
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete failed"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

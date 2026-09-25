@@ -124,6 +124,53 @@ func TestCreateListUpdateSoftDeleteAndQR(t *testing.T) {
 	}
 }
 
+func TestDeleteOrganizationDisablesUsers(t *testing.T) {
+	r := testRouter(t)
+	cookie := loginCookie(t, r)
+	pool := testPool(t)
+	suffix := uniqueSuffix()
+	name := fmt.Sprintf("Disable Users Org %d", suffix)
+
+	create := doJSON(t, r, http.MethodPost, "/admin/v1/organizations", cookie,
+		fmt.Sprintf(`{"name":%q,"status":"active"}`, name))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status %d body %s", create.Code, create.Body.String())
+	}
+	var org map[string]any
+	if err := json.Unmarshal(create.Body.Bytes(), &org); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := org["id"].(string)
+
+	ctx := context.Background()
+	var channelID string
+	if err := pool.QueryRow(ctx, `SELECT id::text FROM channels WHERE slug = 'telegram'`).Scan(&channelID); err != nil {
+		t.Fatal(err)
+	}
+	_, err := pool.Exec(ctx, `
+		INSERT INTO users (id, organization_id, channel_id, participant_id, display_name, status)
+		VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, 'DelTest', 'active')
+	`, id, channelID, fmt.Sprintf("tg-%d", suffix))
+	if err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	del := doJSON(t, r, http.MethodDelete, "/admin/v1/organizations/"+id, cookie, "")
+	if del.Code != http.StatusOK {
+		t.Fatalf("delete status %d body %s", del.Code, del.Body.String())
+	}
+
+	var userStatus string
+	if err := pool.QueryRow(ctx, `
+		SELECT status FROM users WHERE organization_id = $1::uuid LIMIT 1
+	`, id).Scan(&userStatus); err != nil {
+		t.Fatal(err)
+	}
+	if userStatus != "disabled" {
+		t.Fatalf("user status = %q, want disabled", userStatus)
+	}
+}
+
 func testRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
