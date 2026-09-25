@@ -6,11 +6,20 @@ import (
 	"strings"
 
 	"steadwell/internal/channel"
+	"steadwell/internal/replyfmt"
 )
 
 type Update struct {
-	UpdateID int64    `json:"update_id"`
-	Message  *Message `json:"message"`
+	UpdateID      int64          `json:"update_id"`
+	Message       *Message       `json:"message"`
+	CallbackQuery *CallbackQuery `json:"callback_query"`
+}
+
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    *User    `json:"from"`
+	Message *Message `json:"message"`
+	Data    string   `json:"data"`
 }
 
 type Message struct {
@@ -55,6 +64,20 @@ func Inbound(u Update) channel.Inbound {
 		Identity:  channel.Identity{Channel: channel.Telegram},
 		UpdateID:  u.UpdateID,
 		MediaKind: channel.MediaText,
+	}
+	if u.CallbackQuery != nil {
+		cb := u.CallbackQuery
+		in.CallbackID = cb.ID
+		in.Text = replyfmt.CallbackUserText(cb.Data)
+		if cb.From != nil {
+			in.Identity.ParticipantID = strconv.FormatInt(cb.From.ID, 10)
+			in.Identity.DisplayName = cb.From.FirstName
+		}
+		if cb.Message != nil && cb.Message.Chat != nil {
+			in.ChatID = strconv.FormatInt(cb.Message.Chat.ID, 10)
+			in.MessageID = cb.Message.MessageID
+		}
+		return in
 	}
 	if u.Message == nil {
 		return in

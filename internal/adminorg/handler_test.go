@@ -17,7 +17,6 @@ import (
 
 	"steadwell/internal/adminauth"
 	"steadwell/internal/dbmigrate"
-	"steadwell/internal/joinlinks"
 )
 
 func TestOrganizationsRequireAuth(t *testing.T) {
@@ -37,7 +36,7 @@ func TestCreateListUpdateSoftDeleteAndQR(t *testing.T) {
 	wantSlug := fmt.Sprintf("acme-care-%d", suffix)
 
 	create := doJSON(t, r, http.MethodPost, "/admin/v1/organizations", cookie,
-		fmt.Sprintf(`{"name":%q,"status":"active","category":"b2b","subcategory":"b1_corporate_wellness","seat_band":"501-2000","channels":{"telegram":true,"line":true,"whatsapp":false}}`, name))
+		fmt.Sprintf(`{"name":%q,"status":"active","category":"b2b","subcategory":"b1_corporate_wellness","seat_band":"501-2000","channels":{"telegram":{"enabled":true,"bot_username":"SteadwellTestBot","bot_token":"tok","webhook_secret":"sec"},"line":{"enabled":true,"liff_url":"https://liff.line.me/test-liff","channel_secret":"ls","channel_access_token":"lat"},"whatsapp":{"enabled":false}}}`, name))
 	if create.Code != http.StatusCreated {
 		t.Fatalf("create status %d body %s", create.Code, create.Body.String())
 	}
@@ -63,6 +62,15 @@ func TestCreateListUpdateSoftDeleteAndQR(t *testing.T) {
 	}
 	if !strings.Contains(telegramJoin, "t.me/SteadwellTestBot?start=") {
 		t.Fatalf("expected telegram channel join_url, got channels %s", create.Body.String())
+	}
+	if strings.Contains(create.Body.String(), "bot_token") || strings.Contains(create.Body.String(), `"tok"`) {
+		t.Fatalf("create must not return secrets: %s", create.Body.String())
+	}
+	for _, raw := range channelsRaw {
+		ch, _ := raw.(map[string]any)
+		if ch["slug"] == "telegram" && ch["configured"] != true {
+			t.Fatalf("telegram should be configured: %s", create.Body.String())
+		}
 	}
 	if _, ok := org["user_count"]; !ok {
 		t.Fatalf("expected user_count in create body %s", create.Body.String())
@@ -124,6 +132,55 @@ func TestCreateListUpdateSoftDeleteAndQR(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsEnabledChannelWithoutCreds(t *testing.T) {
+	r := testRouter(t)
+	cookie := loginCookie(t, r)
+	name := fmt.Sprintf("No Creds %d", uniqueSuffix())
+	create := doJSON(t, r, http.MethodPost, "/admin/v1/organizations", cookie,
+		fmt.Sprintf(`{"name":%q,"channels":{"telegram":{"enabled":true,"bot_username":"x"}}}`, name))
+	if create.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body %s", create.Code, create.Body.String())
+	}
+	if !strings.Contains(create.Body.String(), "bot_token") {
+		t.Fatalf("expected bot_token error, got %s", create.Body.String())
+	}
+}
+
+func TestPutChannelsKeepExistingSecrets(t *testing.T) {
+	r := testRouter(t)
+	cookie := loginCookie(t, r)
+	name := fmt.Sprintf("Keep Creds %d", uniqueSuffix())
+	create := doJSON(t, r, http.MethodPost, "/admin/v1/organizations", cookie,
+		fmt.Sprintf(`{"name":%q,"channels":{"telegram":{"enabled":true,"bot_username":"firstbot","bot_token":"tok","webhook_secret":"sec"}}}`, name))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create %d %s", create.Code, create.Body.String())
+	}
+	var org map[string]any
+	if err := json.Unmarshal(create.Body.Bytes(), &org); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := org["id"].(string)
+	put := doJSON(t, r, http.MethodPut, "/admin/v1/organizations/"+id+"/channels", cookie,
+		`{"channels":{"telegram":{"enabled":true,"bot_username":"secondbot"}}}`)
+	if put.Code != http.StatusOK {
+		t.Fatalf("put %d %s", put.Code, put.Body.String())
+	}
+	if !strings.Contains(put.Body.String(), "secondbot") {
+		t.Fatalf("username not updated: %s", put.Body.String())
+	}
+	if strings.Contains(put.Body.String(), "bot_token") {
+		t.Fatalf("secrets leaked: %s", put.Body.String())
+	}
+	got := doJSON(t, r, http.MethodGet, "/admin/v1/organizations/"+id, cookie, "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("get %d %s", got.Code, got.Body.String())
+	}
+	if strings.Contains(got.Body.String(), "bot_token") || strings.Contains(got.Body.String(), `"tok"`) {
+		t.Fatalf("GET org must not return secrets: %s", got.Body.String())
+	}
+	doJSON(t, r, http.MethodDelete, "/admin/v1/organizations/"+id, cookie, "")
+}
+
 func TestDeleteOrganizationDisablesUsers(t *testing.T) {
 	r := testRouter(t)
 	cookie := loginCookie(t, r)
@@ -173,6 +230,7 @@ func TestDeleteOrganizationDisablesUsers(t *testing.T) {
 
 func testRouter(t *testing.T) *gin.Engine {
 	t.Helper()
+	t.Setenv("CHANNEL_CREDS_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	gin.SetMode(gin.TestMode)
 	pool := testPool(t)
 	if err := dbmigrate.Apply(context.Background(), pool); err != nil {
@@ -180,11 +238,7 @@ func testRouter(t *testing.T) *gin.Engine {
 	}
 	r := gin.New()
 	adminauth.Register(r, pool)
-	Register(r, pool, joinlinks.Config{
-		TelegramBotUsername: "SteadwellTestBot",
-		WhatsAppNumber:      "15551234567",
-		LineLiffURL:         "https://liff.line.me/test-liff",
-	})
+	Register(r, pool)
 	return r
 }
 

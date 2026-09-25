@@ -19,7 +19,6 @@ import (
 	"steadwell/internal/dbmigrate"
 	"steadwell/internal/flows"
 	"steadwell/internal/flowserver"
-	"steadwell/internal/joinlinks"
 	"steadwell/internal/llm"
 	"steadwell/internal/store"
 	"steadwell/internal/telegramapi"
@@ -58,7 +57,18 @@ func main() {
 	}
 	logger.Info("ready", "org", channel.DefaultOrgSlug, "port", cfg.HTTPPort)
 
-	deps := &flows.Deps{Catalog: cat, Generator: llm.Echo{}}
+	gen, genName, err := llm.SelectGenerator(ctx, llm.LiteLLMEnv{
+		BaseURL: cfg.LiteLLMBaseURL,
+		APIKey:  cfg.LiteLLMAPIKey,
+		Model:   cfg.LiteLLMModel,
+	})
+	if err != nil {
+		logger.Error("llm generator", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("llm generator", "backend", genName, "model", cfg.LiteLLMModel)
+
+	deps := &flows.Deps{Catalog: cat, Chat: cat, Generator: gen}
 	if cfg.TelegramBotToken != "" {
 		deps.Telegram = telegramapi.NewBot(cfg.TelegramBotToken)
 		logger.Info("telegram outbound enabled", "bot", cfg.TelegramBotUsername)
@@ -76,11 +86,7 @@ func main() {
 	}))
 	flowserver.RegisterRoutes(r, deps, cfg.TelegramWebhookSecret)
 	adminauth.Register(r, pool)
-	adminorg.Register(r, pool, joinlinks.Config{
-		TelegramBotUsername: cfg.TelegramBotUsername,
-		WhatsAppNumber:      cfg.WhatsAppNumber,
-		LineLiffURL:         cfg.LineLiffURL,
-	})
+	adminorg.Register(r, pool)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,

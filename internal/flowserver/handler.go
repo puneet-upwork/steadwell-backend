@@ -40,7 +40,7 @@ func handleTelegram(deps *flows.Deps, secret string) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 			return
 		}
-		if update.Message == nil {
+		if update.Message == nil && update.CallbackQuery == nil {
 			slog.Warn("telegram webhook missing message", "update_id", update.UpdateID)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "expected telegram update"})
 			return

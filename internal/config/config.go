@@ -11,6 +11,9 @@ type Config struct {
 	LineLiffURL           string
 	DatabaseURL           string
 	AdminOrigin           string
+	LiteLLMBaseURL        string
+	LiteLLMAPIKey         string
+	LiteLLMModel          string
 }
 
 func Load() Config {
@@ -31,5 +34,8 @@ func Load() Config {
 		LineLiffURL:           os.Getenv("LINE_LIFF_URL"),
 		DatabaseURL:           os.Getenv("DATABASE_URL"),
 		AdminOrigin:           origin,
+		LiteLLMBaseURL:        os.Getenv("LITELLM_BASE_URL"),
+		LiteLLMAPIKey:         os.Getenv("LITELLM_API_KEY"),
+		LiteLLMModel:          os.Getenv("LITELLM_MODEL"),
 	}
 }

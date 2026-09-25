@@ -23,7 +23,7 @@ func (noopSender) AnswerCallback(context.Context, string, string, bool) error {
 
 type echoGen struct{}
 
-func (echoGen) Generate(_ context.Context, system, user string) (string, error) {
+func (echoGen) Generate(_ context.Context, system string, _ []store.ChatMessage, user string) (string, error) {
 	return system + "\n" + user, nil
 }
 
@@ -31,7 +31,7 @@ func TestTelegramWebhookLandsOnDefaultOrg(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cat := store.NewSeeded()
 	r := gin.New()
-	RegisterRoutes(r, &flows.Deps{Catalog: cat, Telegram: noopSender{}, Generator: echoGen{}}, "")
+	RegisterRoutes(r, &flows.Deps{Catalog: cat, Chat: cat, Telegram: noopSender{}, Generator: echoGen{}}, "")
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/telegram", strings.NewReader(`{"update_id":1,"message":{"from":{"id":42,"first_name":"Ada"},"chat":{"id":42},"text":"hello"}}`))
 	w := httptest.NewRecorder()

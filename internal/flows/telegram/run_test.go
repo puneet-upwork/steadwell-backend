@@ -24,7 +24,7 @@ func (s *stubSender) AnswerCallback(context.Context, string, string, bool) error
 
 type stubGen struct{}
 
-func (stubGen) Generate(_ context.Context, system, user string) (string, error) {
+func (stubGen) Generate(_ context.Context, system string, _ []store.ChatMessage, user string) (string, error) {
 	return "SYS:" + system + "|USER:" + user, nil
 }
 
@@ -34,6 +34,7 @@ func testDeps(t *testing.T) (*flows.Deps, *store.Catalog, *stubSender) {
 	sender := &stubSender{}
 	return &flows.Deps{
 		Catalog:   cat,
+		Chat:      cat,
 		Telegram:  sender,
 		Generator: stubGen{},
 	}, cat, sender
@@ -107,4 +108,48 @@ func TestTelegramImageAllowedAfterOrgOverride(t *testing.T) {
 	if !res.OK {
 		t.Fatal("expected ok")
 	}
+}
+
+func TestTelegramPersistsChatHistory(t *testing.T) {
+	deps, cat, _ := testDeps(t)
+	u1, err := telegramapi.ParseJSON([]byte(`{"update_id":1,"message":{"from":{"id":7},"chat":{"id":7},"text":"first"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), deps, u1); err != nil {
+		t.Fatal(err)
+	}
+	hist, err := cat.RecentChatMessages(context.Background(), channel.Telegram, "7", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 2 {
+		t.Fatalf("history len = %d want 2", len(hist))
+	}
+	if hist[0].Role != store.ChatRoleUser || hist[0].Content != "first" {
+		t.Fatalf("hist[0] = %+v", hist[0])
+	}
+	if hist[1].Role != store.ChatRoleAssistant {
+		t.Fatalf("hist[1] = %+v", hist[1])
+	}
+
+	hg := &histGen{}
+	deps.Generator = hg
+	u2, err := telegramapi.ParseJSON([]byte(`{"update_id":2,"message":{"from":{"id":7},"chat":{"id":7},"text":"second"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), deps, u2); err != nil {
+		t.Fatal(err)
+	}
+	if hg.lastHist != 2 {
+		t.Fatalf("second turn history = %d want 2", hg.lastHist)
+	}
+}
+
+type histGen struct{ lastHist int }
+
+func (h *histGen) Generate(_ context.Context, _ string, history []store.ChatMessage, user string) (string, error) {
+	h.lastHist = len(history)
+	return "reply:" + user, nil
 }

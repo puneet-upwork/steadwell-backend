@@ -8,11 +8,12 @@ import (
 )
 
 type Generator interface {
-	Generate(ctx context.Context, system, user string) (string, error)
+	Generate(ctx context.Context, system string, history []store.ChatMessage, user string) (string, error)
 }
 
 type Deps struct {
 	Catalog   store.Cataloger
+	Chat      store.ChatHistory
 	Telegram  telegramapi.Sender
 	Generator Generator
 }

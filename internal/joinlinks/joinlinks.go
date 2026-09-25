@@ -13,6 +13,33 @@ type Config struct {
 	LineLiffURL         string // https://liff.line.me/{liffId}
 }
 
+// FromPublic builds a join config from this org’s public bot fields only.
+// Empty fields mean no QR / deep link — global env is not used.
+func FromPublic(slug string, pub map[string]string) Config {
+	return Config{}.MergePublic(slug, pub)
+}
+
+// MergePublic copies org public fields onto a config. Start from Config{} so
+// only this org’s values are used.
+func (c Config) MergePublic(slug string, pub map[string]string) Config {
+	out := c
+	switch strings.ToLower(strings.TrimSpace(slug)) {
+	case "telegram":
+		if v := strings.TrimPrefix(strings.TrimSpace(pub["bot_username"]), "@"); v != "" {
+			out.TelegramBotUsername = v
+		}
+	case "whatsapp":
+		if v := strings.TrimSpace(pub["phone_number"]); v != "" {
+			out.WhatsAppNumber = v
+		}
+	case "line":
+		if v := strings.TrimSpace(pub["liff_url"]); v != "" {
+			out.LineLiffURL = v
+		}
+	}
+	return out
+}
+
 // ForChannel builds the platform deep link that opens the messaging app
 // with the join token. Empty string means not configured or unknown slug.
 func ForChannel(cfg Config, slug, token string) string {

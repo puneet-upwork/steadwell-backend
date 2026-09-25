@@ -22,6 +22,13 @@ func TestForChannel(t *testing.T) {
 	if got := ForChannel(Config{}, "telegram", token); got != "" {
 		t.Fatalf("expected empty without bot, got %q", got)
 	}
+	org := FromPublic("telegram", map[string]string{"bot_username": "orgbot"})
+	if got := ForChannel(org, "telegram", token); got != "https://t.me/orgbot?start=tok-1" {
+		t.Fatalf("org telegram %q", got)
+	}
+	if got := ForChannel(FromPublic("telegram", nil), "telegram", token); got != "" {
+		t.Fatalf("no org bot must not use env, got %q", got)
+	}
 }
 
 func TestTelegramStartToken(t *testing.T) {

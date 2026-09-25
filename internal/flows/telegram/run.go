@@ -10,6 +10,7 @@ import (
 	"steadwell/internal/flows"
 	"steadwell/internal/joinlinks"
 	"steadwell/internal/prompts"
+	"steadwell/internal/replyfmt"
 	"steadwell/internal/store"
 	"steadwell/internal/telegramapi"
 )
@@ -31,7 +32,10 @@ func Run(ctx context.Context, deps *flows.Deps, update telegramapi.Update) (Resu
 	if in.Identity.ParticipantID == "" {
 		return result, fmt.Errorf("missing telegram participant")
 	}
-	if in.Text == "" && in.MediaKind == channel.MediaText {
+	if in.CallbackID != "" && deps.Telegram != nil {
+		_ = deps.Telegram.AnswerCallback(ctx, in.CallbackID, "", false)
+	}
+	if in.Text == "" && in.MediaKind == channel.MediaText && in.CallbackID == "" {
 		slog.Warn("telegram message.text is empty; put chat and text next to from, not inside from",
 			"update_id", in.UpdateID, "participant_id", in.Identity.ParticipantID)
 	}
@@ -61,22 +65,49 @@ func Run(ctx context.Context, deps *flows.Deps, update telegramapi.Update) (Resu
 	if deps.Generator == nil {
 		return result, fmt.Errorf("llm generator is not configured")
 	}
-	body, err := deps.Generator.Generate(ctx, system, userText)
+	chatID := in.ChatID
+	if chatID == "" {
+		chatID = in.Identity.ParticipantID
+	}
+	var history []store.ChatMessage
+	if deps.Chat != nil {
+		var histErr error
+		history, histErr = deps.Chat.RecentChatMessages(ctx, channel.Telegram, chatID, store.ChatHistoryLimit)
+		if histErr != nil {
+			return result, histErr
+		}
+	}
+	body, err := deps.Generator.Generate(ctx, system, history, userText)
 	if err != nil {
 		return result, err
+	}
+	reply, historyPlain := replyfmt.Parse(body)
+	if deps.Chat != nil {
+		if err := deps.Chat.AppendChatMessage(ctx, channel.Telegram, chatID, store.ChatRoleUser, userText); err != nil {
+			return result, err
+		}
+		storeBody := historyPlain
+		if storeBody == "" {
+			storeBody = body
+		}
+		if err := deps.Chat.AppendChatMessage(ctx, channel.Telegram, chatID, store.ChatRoleAssistant, storeBody); err != nil {
+			return result, err
+		}
 	}
 	result.OK = true
 	result.UserText = userText
 	result.SystemPrompt = system
-	result.Reply = channel.Reply{MessageBody: body}
+	result.Reply = reply
 	slog.Info("telegram reply",
 		"update_id", in.UpdateID,
 		"participant_id", in.Identity.ParticipantID,
 		"org", user.OrganizationSlug,
 		"plan", user.PlanSlug,
 		"user_text", userText,
+		"history_turns", len(history),
 		"prompt_chars", len(system),
-		"reply", body,
+		"has_buttons", len(reply.Buttons) > 0,
+		"reply", historyPlain,
 	)
 	return result, send(ctx, deps, in, result.Reply)
 }

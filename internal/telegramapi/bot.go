@@ -30,13 +30,59 @@ func NewBot(token string) *Bot {
 var _ Sender = (*Bot)(nil)
 
 func (b *Bot) Send(ctx context.Context, chatID string, reply channel.Reply) error {
-	if reply.MessageBody == "" {
+	if reply.MessageBody == "" && reply.ButtonBody == "" {
 		return nil
 	}
-	return b.post(ctx, "sendMessage", map[string]any{
-		"chat_id": chatID,
-		"text":    reply.MessageBody,
-	})
+	if reply.MessageBody != "" {
+		body := map[string]any{
+			"chat_id": chatID,
+			"text":    reply.MessageBody,
+		}
+		if reply.ParseMode != "" {
+			body["parse_mode"] = reply.ParseMode
+		}
+		// Buttons alone on the first bubble when there is no separate button_body.
+		if len(reply.Buttons) > 0 && reply.ButtonBody == "" {
+			body["reply_markup"] = inlineKeyboard(reply.Buttons)
+		}
+		if err := b.post(ctx, "sendMessage", body); err != nil {
+			return err
+		}
+	}
+	if reply.ButtonBody != "" || (reply.MessageBody == "" && len(reply.Buttons) > 0) {
+		text := reply.ButtonBody
+		if text == "" {
+			text = "Please choose:"
+		}
+		body := map[string]any{
+			"chat_id": chatID,
+			"text":    text,
+		}
+		if reply.ParseMode != "" {
+			body["parse_mode"] = reply.ParseMode
+		}
+		if len(reply.Buttons) > 0 {
+			body["reply_markup"] = inlineKeyboard(reply.Buttons)
+		}
+		if err := b.post(ctx, "sendMessage", body); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func inlineKeyboard(rows [][]channel.InlineButton) map[string]any {
+	out := make([][]map[string]string, len(rows))
+	for i, row := range rows {
+		out[i] = make([]map[string]string, len(row))
+		for j, btn := range row {
+			out[i][j] = map[string]string{
+				"text":          btn.Text,
+				"callback_data": btn.CallbackData,
+			}
+		}
+	}
+	return map[string]any{"inline_keyboard": out}
 }
 
 func (b *Bot) AnswerCallback(ctx context.Context, callbackID, text string, showAlert bool) error {

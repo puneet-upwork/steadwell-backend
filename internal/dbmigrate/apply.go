@@ -17,6 +17,8 @@ var files = []string{
 	"002_seed_default.sql",
 	"003_admin_auth.sql",
 	"004_org_commercial.sql",
+	"005_chat_messages.sql",
+	"006_org_channel_credentials.sql",
 }
 
 // Dir walks up from cwd (and MIGRATIONS_DIR) to find migrations/.

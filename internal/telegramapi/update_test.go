@@ -70,3 +70,20 @@ func TestInboundVideo(t *testing.T) {
 		t.Fatalf("media = %q", Inbound(u).MediaKind)
 	}
 }
+
+func TestInboundCallbackAgree(t *testing.T) {
+	u, err := ParseJSON([]byte(`{"update_id":9,"callback_query":{"id":"cb1","from":{"id":55,"first_name":"Ada"},"message":{"message_id":3,"chat":{"id":55},"text":"confirm"},"data":"sw:accept"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := Inbound(u)
+	if in.CallbackID != "cb1" {
+		t.Fatalf("callback_id = %q", in.CallbackID)
+	}
+	if in.Text != "I Agree" {
+		t.Fatalf("text = %q", in.Text)
+	}
+	if in.Identity.ParticipantID != "55" || in.ChatID != "55" {
+		t.Fatalf("ids participant=%q chat=%q", in.Identity.ParticipantID, in.ChatID)
+	}
+}

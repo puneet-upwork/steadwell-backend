@@ -38,16 +38,26 @@ func (id Identity) Key() (channel, participantID string) {
 
 // Inbound is one user event from any messenger.
 type Inbound struct {
-	Identity  Identity
-	ChatID    string
-	MessageID int
-	Text      string
-	MediaKind string
-	UpdateID  int64
+	Identity   Identity
+	ChatID     string
+	MessageID  int
+	Text       string
+	MediaKind  string
+	UpdateID   int64
+	CallbackID string // set for Telegram inline-button presses
+}
+
+// InlineButton is one Telegram/LINE-style action button.
+type InlineButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data"`
 }
 
 // Reply is a channel-agnostic outbound message.
 type Reply struct {
-	MessageBody string `json:"message_body,omitempty"`
-	SkipSend    bool   `json:"skip_send,omitempty"`
+	MessageBody string           `json:"message_body,omitempty"`
+	ButtonBody  string           `json:"button_body,omitempty"`
+	ParseMode   string           `json:"parse_mode,omitempty"` // e.g. "HTML"
+	Buttons     [][]InlineButton `json:"buttons,omitempty"`
+	SkipSend    bool             `json:"skip_send,omitempty"`
 }

@@ -6,11 +6,14 @@ import (
 	"regexp"
 	"strings"
 
+	"encoding/json"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"steadwell/internal/adminauth"
+	"steadwell/internal/chancrypt"
 	"steadwell/internal/joinlinks"
 )
 
@@ -32,20 +35,19 @@ var allowedCategories = map[string]bool{
 }
 
 var allowedSeatBands = map[string]bool{
-	"":            true,
-	"1-500":       true,
-	"501-2000":    true,
-	"2000-plus":   true,
-	"custom":      true,
+	"":          true,
+	"1-500":     true,
+	"501-2000":  true,
+	"2000-plus": true,
+	"custom":    true,
 }
 
 type Handler struct {
-	pool     *pgxpool.Pool
-	joinCfg  joinlinks.Config
+	pool *pgxpool.Pool
 }
 
-func Register(r *gin.Engine, pool *pgxpool.Pool, joinCfg joinlinks.Config) {
-	h := &Handler{pool: pool, joinCfg: joinCfg}
+func Register(r *gin.Engine, pool *pgxpool.Pool) {
+	h := &Handler{pool: pool}
 	g := r.Group("/admin/v1")
 	g.Use(adminauth.Middleware(pool))
 	g.GET("/features", h.listFeatures)
@@ -68,38 +70,42 @@ type featureDefJSON struct {
 }
 
 type channelJSON struct {
-	Slug    string `json:"slug"`
-	Name    string `json:"name"`
-	Enabled bool   `json:"enabled,omitempty"`
-	JoinURL string `json:"join_url,omitempty"`
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Enabled     bool   `json:"enabled,omitempty"`
+	JoinURL     string `json:"join_url,omitempty"`
+	Configured  bool   `json:"configured"`
+	BotUsername string `json:"bot_username,omitempty"`
+	PhoneNumber string `json:"phone_number,omitempty"`
+	LiffURL     string `json:"liff_url,omitempty"`
 }
 
 type orgJSON struct {
-	ID           string           `json:"id"`
-	Slug         string           `json:"slug"`
-	Name         string           `json:"name"`
-	LegalName    *string          `json:"legal_name"`
-	Status       string           `json:"status"`
-	Category     string           `json:"category"`
-	Subcategory  *string          `json:"subcategory"`
-	SeatBand     *string          `json:"seat_band"`
-	JoinToken    string           `json:"join_token"`
-	CreatedBy    string           `json:"created_by_admin_id"`
-	UserCount    int              `json:"user_count"`
-	Features     []featureDefJSON `json:"features,omitempty"`
-	Channels     []channelJSON    `json:"channels,omitempty"`
+	ID          string           `json:"id"`
+	Slug        string           `json:"slug"`
+	Name        string           `json:"name"`
+	LegalName   *string          `json:"legal_name"`
+	Status      string           `json:"status"`
+	Category    string           `json:"category"`
+	Subcategory *string          `json:"subcategory"`
+	SeatBand    *string          `json:"seat_band"`
+	JoinToken   string           `json:"join_token"`
+	CreatedBy   string           `json:"created_by_admin_id"`
+	UserCount   int              `json:"user_count"`
+	Features    []featureDefJSON `json:"features,omitempty"`
+	Channels    []channelJSON    `json:"channels,omitempty"`
 }
 
 type createRequest struct {
-	Slug        string          `json:"slug"`
-	Name        string          `json:"name"`
-	LegalName   *string         `json:"legal_name"`
-	Status      string          `json:"status"`
-	Category    string          `json:"category"`
-	Subcategory *string         `json:"subcategory"`
-	SeatBand    *string         `json:"seat_band"`
-	Features    map[string]bool `json:"features"`
-	Channels    map[string]bool `json:"channels"`
+	Slug        string                  `json:"slug"`
+	Name        string                  `json:"name"`
+	LegalName   *string                 `json:"legal_name"`
+	Status      string                  `json:"status"`
+	Category    string                  `json:"category"`
+	Subcategory *string                 `json:"subcategory"`
+	SeatBand    *string                 `json:"seat_band"`
+	Features    map[string]bool         `json:"features"`
+	Channels    map[string]ChannelInput `json:"channels"`
 }
 
 type updateRequest struct {
@@ -116,7 +122,7 @@ type putFeaturesRequest struct {
 }
 
 type putChannelsRequest struct {
-	Channels map[string]bool `json:"channels"`
+	Channels map[string]ChannelInput `json:"channels"`
 }
 
 func slugFromName(name string) string {
@@ -159,8 +165,8 @@ func optionalTrim(p *string) any {
 	return v
 }
 
-func (h *Handler) channelJoinURL(slug, token string) string {
-	return joinlinks.ForChannel(h.joinCfg, slug, token)
+func (h *Handler) channelJoinURL(slug, token string, pub map[string]string) string {
+	return joinlinks.ForChannel(joinlinks.FromPublic(slug, pub), slug, token)
 }
 
 func (h *Handler) listFeatures(c *gin.Context) {
@@ -309,6 +315,21 @@ func (h *Handler) create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid slug or name"})
 		return
 	}
+	channels := req.Channels
+	if channels == nil {
+		channels = map[string]ChannelInput{}
+	}
+	var credErrs []string
+	for chSlug, in := range channels {
+		credErrs = append(credErrs, validateChannelCreds(chSlug, in, false)...)
+	}
+	if err := fmtFieldErrors(credErrs); err != nil {
+		var ve credsError
+		if asCredsError(err, &ve) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": ve.Error(), "errors": ve.Errors})
+			return
+		}
+	}
 
 	id := uuid.NewString()
 	token := uuid.NewString()
@@ -350,12 +371,13 @@ func (h *Handler) create(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "features failed"})
 		return
 	}
-	channels := req.Channels
-	if channels == nil {
-		channels = map[string]bool{"telegram": true}
-	}
 	if err := h.writeChannels(c, id, channels); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "channels failed"})
+		var ve credsError
+		if asCredsError(err, &ve) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": ve.Error(), "errors": ve.Errors})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -562,7 +584,12 @@ func (h *Handler) putChannels(c *gin.Context) {
 		return
 	}
 	if err := h.writeChannels(c, id, req.Channels); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "channels failed"})
+		var ve credsError
+		if asCredsError(err, &ve) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": ve.Error(), "errors": ve.Errors})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	org, err = h.getByID(c, id)
@@ -596,8 +623,62 @@ func (h *Handler) writeFeatures(c *gin.Context, orgID string, features map[strin
 	return nil
 }
 
-func (h *Handler) writeChannels(c *gin.Context, orgID string, channels map[string]bool) error {
-	rows, err := h.pool.Query(c.Request.Context(), `SELECT id::text, slug FROM channels WHERE status = 'active'`)
+func (h *Handler) writeChannels(c *gin.Context, orgID string, channels map[string]ChannelInput) error {
+	ctx := c.Request.Context()
+	existing := map[string]struct {
+		configured bool
+		pub        map[string]string
+	}{}
+	erows, err := h.pool.Query(ctx, `
+		SELECT c.slug, COALESCE(oc.credentials_configured, FALSE), COALESCE(oc.public_config, '{}'::jsonb)
+		FROM channels c
+		LEFT JOIN organization_channels oc
+			ON oc.channel_id = c.id AND oc.organization_id = $1::uuid
+		WHERE c.status = 'active'
+	`, orgID)
+	if err != nil {
+		return err
+	}
+	for erows.Next() {
+		var slug string
+		var configured bool
+		var pubRaw []byte
+		if err := erows.Scan(&slug, &configured, &pubRaw); err != nil {
+			erows.Close()
+			return err
+		}
+		existing[slug] = struct {
+			configured bool
+			pub        map[string]string
+		}{configured: configured, pub: publicFromJSON(pubRaw)}
+	}
+	erows.Close()
+
+	var allErrs []string
+	for slug, in := range channels {
+		ex := existing[slug]
+		allErrs = append(allErrs, validateChannelCreds(slug, in, ex.configured)...)
+	}
+	if err := fmtFieldErrors(allErrs); err != nil {
+		return err
+	}
+
+	needEncrypt := false
+	for slug, in := range channels {
+		if _, has, _ := secretPayloadJSON(slug, in); has {
+			needEncrypt = true
+			break
+		}
+	}
+	var key []byte
+	if needEncrypt {
+		key, err = chancrypt.KeyFromEnv()
+		if err != nil {
+			return err
+		}
+	}
+
+	rows, err := h.pool.Query(ctx, `SELECT id::text, slug FROM channels WHERE status = 'active'`)
 	if err != nil {
 		return err
 	}
@@ -607,11 +688,48 @@ func (h *Handler) writeChannels(c *gin.Context, orgID string, channels map[strin
 		if err := rows.Scan(&id, &slug); err != nil {
 			return err
 		}
-		_, err := h.pool.Exec(c.Request.Context(), `
-			INSERT INTO organization_channels (organization_id, channel_id, enabled)
-			VALUES ($1::uuid, $2::uuid, $3)
-			ON CONFLICT (organization_id, channel_id) DO UPDATE SET enabled = EXCLUDED.enabled
-		`, orgID, id, channels[slug])
+		in := channels[slug]
+		ex := existing[slug]
+		pub := mergePublic(ex.pub, slug, in)
+		pubJSON, err := json.Marshal(pub)
+		if err != nil {
+			return err
+		}
+		secretJSON, hasSecret, err := secretPayloadJSON(slug, in)
+		if err != nil {
+			return err
+		}
+		var cipher any
+		configured := ex.configured
+		if hasSecret {
+			if key == nil {
+				key, err = chancrypt.KeyFromEnv()
+				if err != nil {
+					return err
+				}
+			}
+			ct, encErr := chancrypt.Encrypt(key, secretJSON)
+			if encErr != nil {
+				return encErr
+			}
+			cipher = ct
+			configured = true
+		}
+		if in.Enabled && !configured {
+			// should have been caught by validation
+			return credsError{Errors: []string{slug + ": credentials are required to enable this channel"}}
+		}
+		_, err = h.pool.Exec(ctx, `
+			INSERT INTO organization_channels (
+				organization_id, channel_id, enabled, public_config, credentials_ciphertext, credentials_configured
+			)
+			VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5, $6)
+			ON CONFLICT (organization_id, channel_id) DO UPDATE SET
+				enabled = EXCLUDED.enabled,
+				public_config = EXCLUDED.public_config,
+				credentials_ciphertext = COALESCE(EXCLUDED.credentials_ciphertext, organization_channels.credentials_ciphertext),
+				credentials_configured = EXCLUDED.credentials_configured
+		`, orgID, id, in.Enabled, pubJSON, cipher, configured)
 		if err != nil {
 			return err
 		}
@@ -645,7 +763,9 @@ func (h *Handler) loadFeatures(c *gin.Context, orgID string) ([]featureDefJSON, 
 
 func (h *Handler) loadChannels(c *gin.Context, orgID, joinToken string) ([]channelJSON, error) {
 	rows, err := h.pool.Query(c.Request.Context(), `
-		SELECT c.slug, c.name, COALESCE(oc.enabled, FALSE)
+		SELECT c.slug, c.name, COALESCE(oc.enabled, FALSE),
+			COALESCE(oc.credentials_configured, FALSE),
+			COALESCE(oc.public_config, '{}'::jsonb)
 		FROM channels c
 		LEFT JOIN organization_channels oc
 			ON oc.channel_id = c.id AND oc.organization_id = $1::uuid
@@ -659,10 +779,15 @@ func (h *Handler) loadChannels(c *gin.Context, orgID, joinToken string) ([]chann
 	out := make([]channelJSON, 0)
 	for rows.Next() {
 		var ch channelJSON
-		if err := rows.Scan(&ch.Slug, &ch.Name, &ch.Enabled); err != nil {
+		var pubRaw []byte
+		if err := rows.Scan(&ch.Slug, &ch.Name, &ch.Enabled, &ch.Configured, &pubRaw); err != nil {
 			return nil, err
 		}
-		ch.JoinURL = h.channelJoinURL(ch.Slug, joinToken)
+		pub := publicFromJSON(pubRaw)
+		ch.BotUsername = pub["bot_username"]
+		ch.PhoneNumber = pub["phone_number"]
+		ch.LiffURL = pub["liff_url"]
+		ch.JoinURL = h.channelJoinURL(ch.Slug, joinToken, pub)
 		out = append(out, ch)
 	}
 	return out, nil

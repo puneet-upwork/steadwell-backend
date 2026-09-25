@@ -47,6 +47,8 @@ type Catalog struct {
 	promptModules  map[string]promptModule
 	promptVersions map[string]promptVersion
 	promptStack    []stackEntry
+
+	chat map[string][]memChatMsg // channel|chatID -> turns
 }
 
 type org struct {
